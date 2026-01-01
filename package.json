@@ -1,0 +1,28 @@
+{
+  "name": "ca.tim-cstj.fast-play",
+  "displayName": "Fast Play",
+  "version": "1.0.0",
+  "unity": "6000.3",
+  "description": "This tool adds a Fast Play button in the Unity Editor to enter Play Mode without reloading the Domain and Scene.",
+  "documentationUrl": "https://github.com/JonathanTremblay/UnityFastPlay#readme",
+  "changelogUrl": "https://github.com/JonathanTremblay/UnityFastPlay#version-history",
+  "licensesUrl": "https://github.com/JonathanTremblay/UnityFastPlay/blob/main/LICENSE",
+  "type": "tool",
+  "keywords": [
+    "Fast",
+    "Play",
+    "Play Mode",
+    "Reload",
+    "Tool",
+    "Productivity",
+    "Editor",
+    "Mac",
+    "Windows"
+  ],
+  "author": {
+    "name": "Jonathan Tremblay",
+    "url": "github.com/JonathanTremblay",
+    "email": "jtrembla@cstj.qc.ca"
+  },
+  "unityRelease": "0f1"
+}
