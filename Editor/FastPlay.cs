@@ -34,7 +34,7 @@ namespace FastPlay
     [InitializeOnLoad]
     public class FastPlay
     {
-        const string VERSION = "Version 1.0.0 (2026-01)";
+        const string VERSION = "Version 1.0.1 (2026-03)";
         const string ELEMENT_ID = "Fast Play";
         const string TOOLTIP_TEXT = "Fast Play                    Shift+Alt+P\n<color=grey>(don't reload Domain and Scene)</color>";
         const string HEX_COLOR_ON = "#ff822d";
@@ -48,7 +48,6 @@ namespace FastPlay
         const string CATCH_MESSAGE = "The ⚡ Fast Play ⚡ button visibility cannot be handled automatically. Right-click the main toolbar and select \"Fast Play\" to enable or disable it.";
         const string YES_RECOMMENDED = "Yes (recommended)";
         const string NO = "No";
-        static EnterPlayModeOptions _lastPlayModeOptions = EnterPlayModeOptions.None;
         static bool _isFastPlayMode = false;
         static bool _didWarnAboutOverlay = false;
 
@@ -57,12 +56,46 @@ namespace FastPlay
         static bool _isReflectionUnavailableTest = false;
 
         /// <summary>
+        /// EditorPrefs key: true when FastPlay has modified enterPlayModeOptions and hasn't restored them yet.
+        /// </summary>
+        static string HasModifiedSettingsKey => $"{Application.productName}_{ELEMENT_ID}_HasModifiedSettings";
+
+        /// <summary>
+        /// EditorPrefs key: stores the user's original enterPlayModeOptions (as int) before FastPlay changed them.
+        /// </summary>
+        static string OriginalOptionsKey => $"{Application.productName}_{ELEMENT_ID}_OriginalOptions";
+
+        /// <summary>
+        /// Persistent flag indicating whether FastPlay currently "owns" the enterPlayModeOptions value.
+        /// </summary>
+        static bool _hasModifiedSettings
+        {
+            get => EditorPrefs.GetBool(HasModifiedSettingsKey, false);
+            set => EditorPrefs.SetBool(HasModifiedSettingsKey, value);
+        }
+
+        /// <summary>
+        /// Persistent copy of the user's original enterPlayModeOptions, saved before FastPlay overwrites them.
+        /// </summary>
+        static EnterPlayModeOptions _storedOriginalOptions
+        {
+            get => (EnterPlayModeOptions)EditorPrefs.GetInt(OriginalOptionsKey, (int)EnterPlayModeOptions.None);
+            set => EditorPrefs.SetInt(OriginalOptionsKey, (int)value);
+        }
+
+        /// <summary>
         /// Static constructor to subscribe to Play Mode state changes.
+        /// Also recovers from abnormal shutdowns (crash, force-quit) that may have
+        /// left the enterPlayModeOptions stuck on "fast play".
         /// </summary>
         static FastPlay()
         {
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             if (_shouldClearPrefsForTesting) ClearFastPlayButtonPrefs();
+
+            // If the editor was closed (or crashed) while FastPlay owned the settings,
+            // restore them now so the regular Play button doesn't silently skip reloads.
+            if (_hasModifiedSettings && !EditorApplication.isPlaying) RestorePlayModeOptions();
         }
 
         /// <summary>
@@ -71,6 +104,7 @@ namespace FastPlay
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         static void LogFastPlayMessage()
         {
+            if (_shouldClearPrefsForTesting) ClearFastPlayButtonPrefs();
             if (_isFastPlayMode) Debug.Log(INITIAL_MESSAGE);
         }
 
@@ -80,8 +114,17 @@ namespace FastPlay
         /// <param name="state">The new Play Mode state.</param>
         static void OnPlayModeStateChanged(PlayModeStateChange state)
         {
-            if (state == PlayModeStateChange.EnteredPlayMode && _isFastPlayMode) RestorePlayModeOptions();
-            else if (state == PlayModeStateChange.ExitingPlayMode) _isFastPlayMode = false; // Reset state on exit
+            if (state == PlayModeStateChange.EnteredPlayMode && _isFastPlayMode)
+            {
+                RestorePlayModeOptions();
+            }
+            else if (state == PlayModeStateChange.ExitingPlayMode)
+            {
+                // Safety net: if settings were not restored yet (e.g. user stopped play
+                // before EnteredPlayMode fired), restore them now.
+                if (_hasModifiedSettings) RestorePlayModeOptions();
+                _isFastPlayMode = false;
+            }
             MainToolbar.Refresh(ELEMENT_ID); // Refresh the toolbar button state
         }
 
@@ -89,7 +132,7 @@ namespace FastPlay
         /// Creates the Fast Play button in the main toolbar.
         /// </summary>
         /// <returns>An instance of the MainToolbarElement class representing the Fast Play button.</returns>
-        [MainToolbarElement(ELEMENT_ID, defaultDockPosition = MainToolbarDockPosition.Middle, defaultDockIndex = 1)]
+        [MainToolbarElement(ELEMENT_ID, defaultDockPosition = MainToolbarDockPosition.Middle, defaultDockIndex = 0)]  
         public static MainToolbarElement FastPlayButton()
         {
             MainToolbarContent content = new();
@@ -110,13 +153,29 @@ namespace FastPlay
             if (isOn && !EditorApplication.isPlaying)
             {
                 _isFastPlayMode = true;
-                _lastPlayModeOptions = EditorSettings.enterPlayModeOptions;
-                bool isAlreadyFastPlay = _lastPlayModeOptions == (EnterPlayModeOptions.DisableDomainReload | EnterPlayModeOptions.DisableSceneReload);
-                if (isAlreadyFastPlay)
+
+                EnterPlayModeOptions currentOptions = EditorSettings.enterPlayModeOptions;
+                bool isAlreadyFastPlay = currentOptions == (EnterPlayModeOptions.DisableDomainReload | EnterPlayModeOptions.DisableSceneReload);
+
+                if (isAlreadyFastPlay && _hasModifiedSettings)
                 {
-                    bool shouldReset = EditorUtility.DisplayDialog(WARNING_TITLE, WARNING_MESSAGE, YES_RECOMMENDED, NO);
-                    if (shouldReset) _lastPlayModeOptions = EnterPlayModeOptions.None;
+                    // FastPlay itself left these settings behind (e.g. the user stopped play
+                    // before they could be restored). Silently keep the stored original options.
                 }
+                else if (isAlreadyFastPlay)
+                {
+                    // The user (not FastPlay) set these options manually. Warn them.
+                    bool shouldReset = EditorUtility.DisplayDialog(WARNING_TITLE, WARNING_MESSAGE, YES_RECOMMENDED, NO);
+                    _storedOriginalOptions = shouldReset ? EnterPlayModeOptions.None : currentOptions;
+                }
+                else
+                {
+                    _storedOriginalOptions = currentOptions;
+                }
+
+                // Mark that FastPlay now owns the enterPlayModeOptions value.
+                _hasModifiedSettings = true;
+
                 EditorSettings.enterPlayModeOptions = EnterPlayModeOptions.DisableDomainReload | EnterPlayModeOptions.DisableSceneReload;
 
                 EditorApplication.ExecuteMenuItem("Edit/Play Mode/Play"); // Start playing
@@ -126,9 +185,15 @@ namespace FastPlay
         }
 
         /// <summary>
-        /// Restores the last saved Play Mode options (as soon as Play Mode is entered).
+        /// Restores the user's original Play Mode options and clears the persistent "modified" flag.
+        /// Uses the persisted EditorPrefs value so the restore works even after a domain reload
+        /// or editor restart (where the static field _lastPlayModeOptions would have been reset).
         /// </summary>
-        static void RestorePlayModeOptions() => EditorSettings.enterPlayModeOptions = _lastPlayModeOptions;
+        static void RestorePlayModeOptions()
+        {
+            EditorSettings.enterPlayModeOptions = _storedOriginalOptions;
+            _hasModifiedSettings = false;
+        }
 
         /// <summary>
         /// Menu item to trigger Fast Play via keyboard shortcut.
@@ -143,17 +208,109 @@ namespace FastPlay
         public static void InitializeOverlayVisibility() => EditorApplication.delayCall += CheckOverlayOnStartup;
 
         /// <summary>
-        /// Tracks whether the user has already been prompted to show the Fast Play button.
+        /// Path to the project-level settings file.
+        /// Stored in ProjectSettings/ so it is shared across machines via version control.
         /// </summary>
-        static string HasCheckedInitialVisibilityKey => $"{Application.productName}_{ELEMENT_ID}_HasCheckedInitialVisibility";
+        const string SETTINGS_PATH = "ProjectSettings/FastPlaySettings.json";
 
         /// <summary>
-        /// Initially false; set to true the first time we show (or intentionally skip) the prompt.
+        /// Serialisable container for project-level Fast Play preferences.
         /// </summary>
-        static bool _hasCheckedInitialVisibility
+        [System.Serializable]
+        class FastPlaySettings
         {
-            get => EditorPrefs.GetBool(HasCheckedInitialVisibilityKey, false);
-            set => EditorPrefs.SetBool(HasCheckedInitialVisibilityKey, value);
+            public bool showButton = true;
+        }
+
+        /// <summary>
+        /// Loads the project-level settings file.
+        /// </summary>
+        /// <returns>The deserialized settings, or null if the file does not exist yet.</returns>
+        static FastPlaySettings LoadSettings()
+        {
+            try
+            {
+                if (!System.IO.File.Exists(SETTINGS_PATH)) return null;
+                string json = System.IO.File.ReadAllText(SETTINGS_PATH);
+                return JsonUtility.FromJson<FastPlaySettings>(json);
+            }
+            catch (System.Exception)
+            {
+                return null; // Treat corrupted or inaccessible file as "no settings"
+            }
+        }
+
+        /// <summary>
+        /// Saves the project-level settings file.
+        /// </summary>
+        static void SaveSettings(FastPlaySettings settings)
+        {
+            try
+            {
+                string json = JsonUtility.ToJson(settings, true);
+                System.IO.File.WriteAllText(SETTINGS_PATH, json);
+            }
+            catch (System.Exception)
+            {
+                // Silently ignore write failures (read-only filesystem, locked file, etc.)
+            }
+        }
+
+        /// <summary>
+        /// Legacy EditorPrefs key used before project-level settings (v1.0.0 and earlier).
+        /// Used for one-time migration only.
+        /// </summary>
+        static string LegacyHasCheckedVisibilityKey => $"{Application.productName}_{ELEMENT_ID}_HasCheckedInitialVisibility";
+
+        /// <summary>
+        /// EditorPrefs key: true once the project-level settings have been applied on this machine.
+        /// Prevents CheckOverlayOnStartup from re-forcing the overlay visible on every domain reload.
+        /// </summary>
+        static string HasAppliedSettingsKey => $"{Application.productName}_{ELEMENT_ID}_HasAppliedSettings";
+
+        /// <summary>
+        /// Cross-project EditorPrefs key (not scoped to a product name) that remembers
+        /// the user's last button-visibility preference. When the user adds FastPlay to a
+        /// new project, this pref lets us honour their previous choice and skip the prompt
+        /// if they already opted in. If no preference is stored, the user is always asked.
+        /// </summary>
+        const string CROSS_PROJECT_SHOW_BUTTON_KEY = "FastPlay_ShowButton";
+
+        /// <summary>
+        /// Persists the user's button-visibility preference in a cross-project EditorPrefs key.
+        /// When the user opts in ("show"), the preference is recorded so future projects
+        /// can honour it without prompting. When the user opts out ("hide"), the key is
+        /// removed so the user will be asked again in new projects.
+        /// </summary>
+        static void RecordCrossProjectChoice(bool showButton)
+        {
+            if (showButton) EditorPrefs.SetBool(CROSS_PROJECT_SHOW_BUTTON_KEY, true);
+            else EditorPrefs.DeleteKey(CROSS_PROJECT_SHOW_BUTTON_KEY);
+        }
+
+        /// <summary>
+        /// Migrates the old per-machine EditorPrefs visibility flag to the new project-level settings file.
+        /// If the old key exists and no settings file has been created yet, the current overlay state
+        /// is saved as the user's choice so they are never re-prompted.
+        /// </summary>
+        /// <param name="overlay">The Fast Play overlay instance, used to read current visibility.</param>
+        /// <returns>True if migration occurred (settings file was created), false otherwise.</returns>
+        static bool TryMigrateLegacyPrefs(Overlay overlay)
+        {
+            if (!EditorPrefs.HasKey(LegacyHasCheckedVisibilityKey)) return false;
+
+            // Old key exists — user already went through the prompt in a previous version.
+            // Migrate: use the overlay's current displayed state as the recorded choice.
+            if (!System.IO.File.Exists(SETTINGS_PATH))
+            {
+                bool isVisible = overlay != null && overlay.displayed;
+                SaveSettings(new FastPlaySettings { showButton = isVisible });
+                RecordCrossProjectChoice(isVisible);
+            }
+
+            // Clean up the legacy key so this migration only runs once.
+            EditorPrefs.DeleteKey(LegacyHasCheckedVisibilityKey);
+            return true;
         }
 
         /// <summary>
@@ -163,15 +320,19 @@ namespace FastPlay
         static void ToggleFastPlayButton()
         {
             _didWarnAboutOverlay = false;
-            // 1. Determine current state based on actual overlay if possible
             Overlay myOverlay = GetFastPlayOverlay();
-            bool isCurrentlyVisible;
-            if (myOverlay != null) isCurrentlyVisible = myOverlay.displayed;
-            else isCurrentlyVisible = false; // If overlay can't be queried, assume invisible
 
-            // 2. Toggle the state
-            bool shouldShow = !isCurrentlyVisible;
-            SetOverlayVisibility(shouldShow);
+            if (myOverlay == null)
+            {
+                LogOverlayWarningIfNeeded();
+                return; // Cannot toggle: overlay is inaccessible, so no preference is saved
+            }
+
+            // Toggle the actual overlay state, then persist the choice
+            bool shouldShow = !myOverlay.displayed;
+            myOverlay.displayed = shouldShow;
+            SaveSettings(new FastPlaySettings { showButton = shouldShow });
+            RecordCrossProjectChoice(shouldShow);
         }
 
         /// <summary>
@@ -196,13 +357,12 @@ namespace FastPlay
         }
 
         /// <summary>
-        /// Checks on startup if the overlay should be shown, and prompts the user if it is hidden.
+        /// Checks on startup whether the overlay should be shown, based on the user's
+        /// previously recorded preference. If no preference exists yet, prompts the user
+        /// once and records their answer for future sessions and projects.
         /// </summary>
         static void CheckOverlayOnStartup()
         {
-            if (_hasCheckedInitialVisibility) return;
-            _hasCheckedInitialVisibility = true;
-
             Overlay myOverlay = GetFastPlayOverlay();
 
             if (myOverlay == null)
@@ -211,22 +371,55 @@ namespace FastPlay
                 return;
             }
 
-            if (!myOverlay.displayed)
-            {
-                // First time we detect it's hidden: ask once.
-                bool shouldShowBtn = EditorUtility.DisplayDialog(SHOW_TITLE, SHOW_MESSAGE, YES_RECOMMENDED, NO);
-                if (shouldShowBtn) myOverlay.displayed = true;
-            }
-        }
+            // Migrate old per-machine EditorPrefs to the new project-level settings file.
+            // If migration happened, the settings file now exists, so fall through to the normal path.
+            TryMigrateLegacyPrefs(myOverlay);
 
-        /// <summary>
-        /// Sets the visibility of the Fast Play overlay.
-        /// </summary>
-        /// <param name="shouldBeVisible">True to show the overlay, false to hide it.</param>
-        static void SetOverlayVisibility(bool shouldBeVisible)
-        {
-            Overlay myOverlay = GetFastPlayOverlay();
-            if (myOverlay != null) myOverlay.displayed = shouldBeVisible;
+            FastPlaySettings settings = LoadSettings();
+
+            if (settings != null)
+            {
+                bool hasApplied = EditorPrefs.GetBool(HasAppliedSettingsKey, false);
+
+                if (!hasApplied)
+                {
+                    // First time on this machine: apply the project-level preference.
+                    EditorPrefs.SetBool(HasAppliedSettingsKey, true);
+                    if (settings.showButton && !myOverlay.displayed) myOverlay.displayed = true;
+                }
+                else if (myOverlay.displayed != settings.showButton)
+                {
+                    // The overlay state drifted from the settings (e.g. the user hid the
+                    // button via the toolbar right-click menu, which bypasses our code).
+                    // Update the settings file to match the actual overlay state.
+                    SaveSettings(new FastPlaySettings { showButton = myOverlay.displayed });
+                    RecordCrossProjectChoice(myOverlay.displayed);
+                }
+
+                return;
+            }
+
+            // No settings file yet. If the overlay is already visible, record that and move on.
+            if (myOverlay.displayed)
+            {
+                SaveSettings(new FastPlaySettings { showButton = true });
+                RecordCrossProjectChoice(true);
+                return;
+            }
+
+            // Honour the user's preference from another project, if they previously opted in.
+            if (EditorPrefs.GetBool(CROSS_PROJECT_SHOW_BUTTON_KEY, false))
+            {
+                myOverlay.displayed = true;
+                SaveSettings(new FastPlaySettings { showButton = true });
+                return;
+            }
+
+            // No stored preference: ask the user for their choice.
+            bool shouldShow = EditorUtility.DisplayDialog(SHOW_TITLE, SHOW_MESSAGE, YES_RECOMMENDED, NO);
+            if (shouldShow) myOverlay.displayed = true;
+            SaveSettings(new FastPlaySettings { showButton = shouldShow });
+            RecordCrossProjectChoice(shouldShow);
         }
 
         /// <summary>
@@ -294,7 +487,11 @@ namespace FastPlay
         static void ClearFastPlayButtonPrefs()
         {
             _didWarnAboutOverlay = false;
-            EditorPrefs.DeleteKey(HasCheckedInitialVisibilityKey);
+            if (System.IO.File.Exists(SETTINGS_PATH)) System.IO.File.Delete(SETTINGS_PATH);
+            EditorPrefs.DeleteKey(HasModifiedSettingsKey);
+            EditorPrefs.DeleteKey(OriginalOptionsKey);
+            EditorPrefs.DeleteKey(CROSS_PROJECT_SHOW_BUTTON_KEY);
+            EditorPrefs.DeleteKey(HasAppliedSettingsKey);
             Debug.Log("Cleared Fast Play button preferences.");
         }
     }

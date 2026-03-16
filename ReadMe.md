@@ -71,6 +71,7 @@ public class MyScoreManager : MonoBehaviour
 
 *   **Static Variables:** As mentioned above, static fields persist. Ensure you reset them.
 *   **Scene Persistence (Scene Reload):** Since Scene Reload is disabled, objects in the scene are not handled the same way. This may lead to unexpected behavior in some cases.
+*   **Version Control:** Files modified externally might temporarily fall out of sync with the Editor state. If things look off, do a regular Play.
 *   **Third-Party Assets:** Some assets or plugins rely on a full domain or scene reload to initialize correctly.
 *   **Recommendation:** Use Fast Play for rapid iteration on gameplay logic, but frequently test with the regular Play button to ensure your game works correctly with a fresh start.
 *   **Reporting:** Issues can be reported on GitHub: [https://github.com/JonathanTremblay/UnityFastPlay/issues](https://github.com/JonathanTremblay/UnityFastPlay/issues)
@@ -85,9 +86,11 @@ Project Repository: [https://github.com/JonathanTremblay/UnityFastPlay](https://
 
 ## Version History
 
+* 1.0.1
+    * Improved handling of rapid Play/Stop transitions and refined Fast Play button visibility behavior.
 * 1.0.0
     * First public version for Unity 6000.3+. Added toolbar button, shortcuts, and safety checks.
 
 ## License
 
-* This project is licensed under the MIT License - see the [LICENSE](https://github.com/JonathanTremblay/UnityFastPlay/blob/main/LICENSE) file for details.
+* This project is licensed under the MIT License - see the [LICENSE](https://github.com/JonathanTremblay/UnityFastPlay/blob/main/LICENSE.md) file for details.
